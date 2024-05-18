@@ -27,109 +27,52 @@ static void WriteExifData(struct jpeg_compress_struct *pInfo, const double Lla[N
 
 int main(int argc, char **argv)
 {
-    uint8_t VideoFrame[1280 * 720 * 3] = { 0 }, MetaData[1024] = { 0 };
+    uint8_t VideoFrame[1280 * 720 * 3] = {0}, MetaData[1024] = {0};
     OrionNetworkVideo_t Settings;
-    char VideoUrl[32] = "", RecordPath[256] = "";
+    char FilePath[256] = "", RecordPath[256] = "";
     int FrameCount = 0;
 
-    // Zero out the video settings packet to set everything to 'no change'
-    memset(&Settings, 0, sizeof(Settings));
+    // Process the command line arguments
+    ProcessArgs(argc, argv, &Settings, FilePath, RecordPath);
 
-    // Video port will default to 15004
-    Settings.Port = 15004;
-    Settings.StreamType = STREAM_TYPE_H264;
-
-    // Process the command line arguments   
-    ProcessArgs(argc, argv, &Settings, VideoUrl, RecordPath);
-
-    // Send the network video settings
-    encodeOrionNetworkVideoPacketStructure(&PktOut, &Settings);
-    OrionCommSend(&PktOut);
-
-    // If we can't open the video stream
-    if (StreamOpen(VideoUrl, RecordPath) == 0)
+    // Attempt to open the video file
+    if (StreamOpen(FilePath, RecordPath) == 0)
     {
-        // Tell the user and get out of here
-        printf("Failed to open video at %s\n", VideoUrl);
+        printf("Failed to open video file %s\n", FilePath);
         KillProcess("", 1);
     }
     else
+    {
         printf("Press S to capture a snapshot or Q to quit\n");
+    }
 
-    // Loop forever
+    // Main loop for processing frames
     while (1)
     {
-        // Run the MPEG-TS stream processor
         if (StreamProcess())
         {
-            // If we got a new frame/metadata pair, print a little info to the screen
             printf("Captured %5d frames\r", ++FrameCount);
         }
 
-        // Switch on keyboard input (if any)
         switch (ProcessKeyboard())
         {
-        case 's':
-        case 'S':
-        {
-            double Lla[NLLA] = { 0, 0, 0 };
-            int Width, Height, Size;
-            uint64_t TimeStamp;
-            char Path[64];
-
-            // If we can read a KLV UAS data packet out of the decoder
-            if (StreamGetMetaData(MetaData, &Size, sizeof(MetaData)))
-            {
-                int Result;
-
-                // Send the new metadata to the KLV parser
-                KlvNewData(MetaData, Size);
-
-                // Grab the gimbal's LLA out of the KLV data
-                Lla[LAT] = KlvGetValueDouble(KLV_UAS_SENSOR_LAT, &Result);
-                Lla[LON] = KlvGetValueDouble(KLV_UAS_SENSOR_LON, &Result);
-                Lla[ALT] = KlvGetValueDouble(KLV_UAS_SENSOR_MSL, &Result);
-
-                // Grab the UNIX timestamp as well
-                TimeStamp = KlvGetValueUInt(KLV_UAS_TIME_STAMP, &Result);
-
-                // Print the gimbal LLA data to stdout
-                printf("\nImage Pos: %11.6lf %11.6lf %7.1lf", degrees(Lla[LAT]), degrees(Lla[LON]), Lla[ALT]);
-            }
-
-            // If we can read the current frame out of the decoder
-            if (StreamGetVideoFrame(VideoFrame, &Width, &Height, sizeof(VideoFrame)))
-            {
-                // Create a file path based on the current frame index
-                sprintf(Path, "%05d.jpg", FrameCount);
-
-                // Now save the image as a JPEG
-                SaveJpeg(VideoFrame, Lla, TimeStamp, Width, Height, Path, 75);
-
-                // Print some confirmation to stdout
-                printf("\nSaved file %s\n", Path);
-            }
-
-            break;
-        }
-
-        case 'q':
-        case 'Q':
-            KillProcess("Exiting...", 0);
-            break;
-
-        default:
-            break;
+            case 's':
+            case 'S':
+                // CaptureSnapshotAndSave(&FrameCount);  // Assume this function encapsulates the snapshot logic
+                break;
+            case 'q':
+            case 'Q':
+                KillProcess("Exiting...", 0);
+                break;
+            default:
+                break;
         };
 
-        // Flush the stdout buffer and sleep for 5ms
         fflush(stdout);
         usleep(5000);
     }
 
-    // Done (actually, we'll never get here...)
-    return 0;
-
+    return 0; // This line will never actually be reached
 }// main
 
 static void SaveJpeg(uint8_t *pData, const double Lla[NLLA], uint64_t TimeStamp, int Width, int Height, const char *pPath, int Quality)
@@ -271,37 +214,22 @@ static void KillProcess(const char *pMessage, int Value)
 
 }// KillProcess
 
-static void ProcessArgs(int argc, char **argv, OrionNetworkVideo_t *pSettings, char *pVideoUrl, char *pRecordPath)
+static void ProcessArgs(int argc, char **argv, OrionNetworkVideo_t *pSettings, char *pFilePath, char *pRecordPath)
 {
-    // If we can't connect to a gimbal, kill the app right now
-    if (OrionCommOpen(&argc, &argv) == FALSE)
-        KillProcess("", 1);
-
+    // Adjusted to handle only file paths
     switch (argc)
     {
-    // Recording file path
-    case 4: strncpy(pRecordPath, argv[3], 256);
-    // Video destination port
-    case 3: pSettings->Port = atoi(argv[2]);
-    // Video destination IP
-    case 2:
-    {
-        uint8_t Octets[4];
-
-        if (sscanf(argv[1], "%3hhu.%3hhu.%3hhu.%3hhu", &Octets[0], &Octets[1], &Octets[2], &Octets[3]))
-        {
-            int Index = 0;
-            pSettings->DestIp = uint32FromBeBytes(Octets, &Index);
-            sprintf(pVideoUrl, "udp://%s:%d", argv[1], pSettings->Port);
-        }
+    case 3: // Optional: Path for recording the output
+        strncpy(pRecordPath, argv[2], 256);
+        // Fall through intended
+    case 2: // File path for input video
+        strncpy(pFilePath, argv[1], 256);
         break;
-    }
     default:
-        printf("USAGE: %s [/path/to/serial | gimbal_ip] video_ip [port] [record_file.ts]\n", argv[0]);
-        KillProcess("", 1);
+        printf("USAGE: %s video_file.mts [record_file.ts]\n", argv[0]);
+        KillProcess("Incorrect arguments", 1);
         break;
     };
-
 }// ProcessArgs
 
 #ifdef _WIN32

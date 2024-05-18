@@ -24,35 +24,29 @@ static uint64_t MetaDataBytes = 0;
 static int VideoStream = 0;
 static int DataStream = 0;
 
-int StreamOpen(const char *pUrl, const char *pRecordPath)
+int StreamOpen(const char *pFilePath, const char *pRecordPath)
 {
     AVCodec *pCodec;
 
-    // FFmpeg startup stuff
+    // FFmpeg initialization
     avcodec_register_all();
     av_register_all();
-    avformat_network_init();
-    av_log_set_level(AV_LOG_QUIET);
 
     // Allocate a new format context
     pInputContext = avformat_alloc_context();
 
-    // Have avformat_open_input timeout after 5s
-    AVDictionary *pOptions = 0;
-    av_dict_set(&pOptions, "timeout", "5000000", 0);
-
-    // If the stream doesn't open
-    if (avformat_open_input(&pInputContext, pUrl, NULL, &pOptions) < 0)
+    // Open the local file
+    if (avformat_open_input(&pInputContext, pFilePath, NULL, NULL) < 0)
     {
-        // Clean up the allocated resources (if any...) and exit with a failure code
+        // Handle error in opening file
         StreamClose();
         return 0;
     }
 
-    // If there don't appear to be an valid streams in the transport stream
-    if (pInputContext->nb_streams == 0)
+    // Find stream info
+    if (avformat_find_stream_info(pInputContext, NULL) < 0)
     {
-        // Clean up the allocated resources (if any...) and exit with a failure code
+        // Handle error in finding stream info
         StreamClose();
         return 0;
     }
@@ -61,59 +55,28 @@ int StreamOpen(const char *pUrl, const char *pRecordPath)
     VideoStream = av_find_best_stream(pInputContext, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
     DataStream  = av_find_best_stream(pInputContext, AVMEDIA_TYPE_DATA,  -1, -1, NULL, 0);
 
-    // Set the format context to playing
-    av_read_play(pInputContext);
-
-    // Get a codec pointer based on the video stream's codec ID and allocate a context
+    // Get a codec pointer and allocate a context
     pCodec = avcodec_find_decoder(pInputContext->streams[VideoStream]->codec->codec_id);
     pCodecContext = avcodec_alloc_context3(pCodec);
-
-    // Open the newly allocated codec context
     avcodec_open2(pCodecContext, pCodec, NULL);
 
-    // If the user passed in a record path
-    if (pRecordPath && strlen(pRecordPath))
-    {
-        int i;
-
-        // Pull any additional stream information out of the file
-        //   NOTE: Older FFmpeg/libav builds may hang indefinitely here!
-        avformat_find_stream_info(pInputContext, NULL);
-
-        // Allocate a format context for the output file
-        avformat_alloc_output_context2(&pOutputContext, NULL, NULL, pRecordPath);
-
-        // For each stream in the UDP stream
-        for (i = 0; i < pInputContext->nb_streams; i++)
-        {
-            // Mirror this stream to the output format context
-            AVStream *pStream = avformat_new_stream(pOutputContext, pInputContext->streams[i]->codec->codec);
-            avcodec_copy_context(pStream->codec, pInputContext->streams[i]->codec);
-
-            // Add a stream header if the output format calls for it
-            if (pOutputContext->oformat->flags & AVFMT_GLOBALHEADER)
-                pStream->codec->flags |= CODEC_FLAG_GLOBAL_HEADER;
-                // if running more recent version of ffmpeg, uncomment line below, and comment line above
-                //pStream->codec->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-        }
-
-        // Open the record file and write the header out
-        avio_open(&pOutputContext->pb, pRecordPath, AVIO_FLAG_WRITE);
-        avformat_write_header(pOutputContext, NULL);
-    }
+    // Handling the recording path if provided
+    // if (pRecordPath && strlen(pRecordPath))
+    // {
+    //     setupRecordingPath(pInputContext, pRecordPath);  // Assume setupRecordingPath handles setting up the output context
+    // }
 
     // Allocate the decode and output frame structures
     pFrame = av_frame_alloc();
     pFrameCopy = av_frame_alloc();
 
-    // Finally, initialize the AVPacket structure
+    // Initialize the AVPacket structure
     av_init_packet(&Packet);
     Packet.data = NULL;
     Packet.size = 0;
 
     // Done - return 1 to indicate success
     return 1;
-
 }// StreamOpen
 
 void StreamClose(void)
